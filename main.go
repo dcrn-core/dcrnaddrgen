@@ -7,8 +7,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/decred/base58"
 	"io"
 	"os"
 	"runtime"
@@ -52,7 +54,8 @@ const ExternalBranch uint32 = 0
 // branch.
 const InternalBranch uint32 = 1
 
-var params = chaincfg.MainNetParams()
+//var params = chaincfg.MainNetParams()
+var params = chaincfg.TestNet3Params()
 
 // Flag arguments.
 var getHelp = flag.Bool("h", false, "Print help message")
@@ -73,7 +76,7 @@ var newLine = "\n"
 // Error is returned if the file does exist. Otherwise writeNewFile creates the file with permissions perm;
 // Based on ioutil.WriteFile, but produces an err if the file exists.
 func writeNewFile(filename string, data []byte, perm os.FileMode) error {
-	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	f, err := os.OpenFile(filename, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
@@ -92,12 +95,21 @@ func writeNewFile(filename string, data []byte, perm os.FileMode) error {
 
 // generateKeyPair generates and stores a secp256k1 keypair in a file.
 func generateKeyPair(filename string) error {
+	//{
+	//	addressBase58 := "DsabRUzLFikdEx62WeSyFjvqVg7i8DkuTjo"
+	//	address := base58.Decode(addressBase58)
+	//	address = address[2:]
+	//	addressHex := hex.EncodeToString(address)
+	//	fmt.Printf("addressHex:             %v\n", addressHex[:40])
+	//	// OP_DUP OP_HASH160 OP_DATA_20 addressHex(RIPEMD-160)_remove_checksum OP_EQUALVERIFY OP_CHECKSIG
+	//	fmt.Printf("addressHexScript: 76a914%v88ac\n", addressHex[:40])
+	//}
+
 	priv, err := secp256k1.GeneratePrivateKey()
 	if err != nil {
 		return err
 	}
 	pub := priv.PubKey()
-
 	addr, err := dcrutil.NewAddressPubKeyHash(
 		dcrutil.Hash160(pub.SerializeCompressed()),
 		params,
@@ -118,6 +130,10 @@ func generateKeyPair(filename string) error {
 	buf.WriteString("Private key: ")
 	buf.WriteString(privWif.String())
 	buf.WriteString(newLine)
+
+	fmt.Printf("Public hash160: %v\n", hex.EncodeToString(dcrutil.Hash160(pub.SerializeCompressed())))
+	fmt.Printf("Address:        %v\n", addr.Address())
+	fmt.Printf("Private key:    %v\n", privWif.String())
 
 	return writeNewFile(filename, buf.Bytes(), 0600)
 }
@@ -217,7 +233,7 @@ func generateSeed(filename string) error {
 	defer coinTypeKeyPriv.Zero()
 
 	// Derive the account key for the first account according to BIP0044.
-	acctKeyPriv, err := deriveAccountKey(coinTypeKeyPriv, 0)
+	acctPrivKey, err := deriveAccountKey(coinTypeKeyPriv, 0)
 	if err != nil {
 		// The seed is unusable if the any of the children in the
 		// required hierarchy can't be derived due to invalid child.
@@ -230,7 +246,7 @@ func generateSeed(filename string) error {
 
 	// Ensure the branch keys can be derived for the provided seed according
 	// to BIP0044.
-	if err := checkBranchKeys(acctKeyPriv); err != nil {
+	if err := checkBranchKeys(acctPrivKey); err != nil {
 		// The seed is unusable if the any of the children in the
 		// required hierarchy can't be derived due to invalid child.
 		if err == hdkeychain.ErrInvalidChild {
@@ -241,29 +257,45 @@ func generateSeed(filename string) error {
 	}
 
 	// The address manager needs the public extended key for the account.
-	acctKeyPub := acctKeyPriv.Neuter()
+	acctPubKey := acctPrivKey.Neuter()
 	index := uint32(0)  // First address
 	branch := uint32(0) // External
 
-	// The next address can only be generated for accounts that have already
-	// been created.
-	acctKey := acctKeyPub
-	defer acctKey.Zero()
-
 	// Derive the appropriate branch key and ensure it is zeroed when done.
-	branchKey, err := acctKey.Child(branch)
+	branchPubKey0, err := acctPubKey.Child(branch)
 	if err != nil {
 		return err
 	}
-	defer branchKey.Zero() // Ensure branch key is zeroed when done.
+	defer branchPubKey0.Zero() // Ensure branch key is zeroed when done.
 
-	key, err := branchKey.Child(index)
+	pubKey0, err := branchPubKey0.Child(index)
 	if err != nil {
 		return err
 	}
-	defer key.Zero()
+	defer pubKey0.Zero()
 
-	pk := key.SerializedPubKey()
+	branchPrivKey0, err := acctPrivKey.Child(branch)
+	if err != nil {
+		return err
+	}
+	defer branchPrivKey0.Zero() // Ensure branch key is zeroed when done.
+
+	privKey0, err := branchPrivKey0.Child(index)
+	sk, err := privKey0.SerializedPrivKey()
+	if err != nil {
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	defer pubKey0.Zero()
+
+	privWif0, err := dcrutil.NewWIF(sk, params.PrivateKeyID, dcrec.STEcdsaSecp256k1)
+	if err != nil {
+		return err
+	}
+
+	pk := pubKey0.SerializedPubKey()
 	pkHash := dcrutil.Hash160(pk)
 	addr, err := dcrutil.NewAddressPubKeyHash(pkHash, params, dcrec.STEcdsaSecp256k1)
 	if err != nil {
@@ -277,8 +309,11 @@ func generateSeed(filename string) error {
 	fmt.Println("WRITE DOWN THE SEED GIVEN BELOW. YOU WILL NOT BE GIVEN " +
 		"ANOTHER CHANCE TO.\n")
 	fmt.Printf("Your wallet generation seed is:\n\n")
+	var seedWords string
 	for i := 0; i < hdkeychain.RecommendedSeedLen+1; i++ {
 		fmt.Printf("%v ", seedStrSplit[i])
+		seedWords += seedStrSplit[i]
+		seedWords += " "
 
 		if (i+1)%6 == 0 {
 			fmt.Printf("\n")
@@ -314,8 +349,29 @@ func generateSeed(filename string) error {
 	buf.WriteString("First address: ")
 	buf.WriteString(addr.Address())
 	buf.WriteString(newLine)
+
+	buf.WriteString("First address private key: ")
+	buf.WriteString(privWif0.String())
+	buf.WriteString(newLine)
+
 	buf.WriteString("Extended public key: ")
-	buf.WriteString(acctKey.String())
+	buf.WriteString(base58.Encode(sk))
+	buf.WriteString(newLine)
+
+	buf.WriteString("Public key: ")
+	buf.WriteString(hex.EncodeToString(pk))
+	buf.WriteString(newLine)
+
+	buf.WriteString("Public key hash: ")
+	buf.WriteString(hex.EncodeToString(pkHash))
+	buf.WriteString(newLine)
+
+	buf.WriteString("Seed: ")
+	buf.WriteString(hex.EncodeToString(seed))
+	buf.WriteString(newLine)
+
+	buf.WriteString("Seed Words: ")
+	buf.WriteString(seedWords)
 	buf.WriteString(newLine)
 
 	// Zero the seed array.
