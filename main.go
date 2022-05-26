@@ -576,3 +576,105 @@ func main() {
 	fmt.Printf("\nYour extended public key can be used to " +
 		"derive all your addresses. Keep it private.\n")
 }
+
+func generateAddresses(seedHex string, filename string, addrNum uint32) error {
+	seed, err := hex.DecodeString(seedHex)
+	if err != nil {
+		return err
+	}
+
+	// Derive the master extended key from the seed.
+	root, err := hdkeychain.NewMaster(seed, params)
+	if err != nil {
+		return err
+	}
+	defer root.Zero()
+
+	// Derive the cointype key according to BIP0044.
+	coinTypeKeyPriv, err := deriveCoinTypeKey(root, params.SLIP0044CoinType)
+	if err != nil {
+		return err
+	}
+	defer coinTypeKeyPriv.Zero()
+
+	// Derive the account key for the first account according to BIP0044.
+	acctPrivKey, err := deriveAccountKey(coinTypeKeyPriv, 0)
+	if err != nil {
+		// The seed is unusable if the any of the children in the
+		// required hierarchy can't be derived due to invalid child.
+		if err == hdkeychain.ErrInvalidChild {
+			return fmt.Errorf("the provided seed is unusable")
+		}
+
+		return err
+	}
+
+	// Ensure the branch keys can be derived for the provided seed according
+	// to BIP0044.
+	if err := checkBranchKeys(acctPrivKey); err != nil {
+		// The seed is unusable if the any of the children in the
+		// required hierarchy can't be derived due to invalid child.
+		if err == hdkeychain.ErrInvalidChild {
+			return fmt.Errorf("the provided seed is unusable")
+		}
+
+		return err
+	}
+
+	// The address manager needs the public extended key for the account.
+	acctPubKey := acctPrivKey.Neuter()
+	index := uint32(0)  // First address
+	branch := uint32(0) // External
+
+	// Derive the appropriate branch key and ensure it is zeroed when done.
+	branchPubKey0, err := acctPubKey.Child(branch)
+	if err != nil {
+		return err
+	}
+	defer branchPubKey0.Zero() // Ensure branch key is zeroed when done.
+
+	var buf bytes.Buffer
+
+	//each range to output one address
+	for ; index <= addrNum; index++ {
+		pubKey0, err := branchPubKey0.Child(index)
+		if err != nil {
+			return err
+		}
+		defer pubKey0.Zero()
+
+		branchPrivKey0, err := acctPrivKey.Child(branch)
+		if err != nil {
+			return err
+		}
+		defer branchPrivKey0.Zero() // Ensure branch key is zeroed when done.
+
+		if err != nil {
+			return err
+		}
+		if err != nil {
+			return err
+		}
+		defer pubKey0.Zero()
+
+		//privWif0, err := dcrutil.NewWIF(sk, params.PrivateKeyID, dcrec.STEcdsaSecp256k1)
+		if err != nil {
+			return err
+		}
+
+		pk := pubKey0.SerializedPubKey()
+		pkHash := dcrutil.Hash160(pk)
+		addr, err := dcrutil.NewAddressPubKeyHash(pkHash, params, dcrec.STEcdsaSecp256k1)
+		if err != nil {
+			return err
+		}
+
+		buf.WriteString("address: ")
+		buf.WriteString(addr.Address())
+		buf.WriteString(newLine)
+
+	}
+	// Zero the seed array.
+	copy(seed[:], bytes.Repeat([]byte{0x00}, 32))
+	return writeNewFile(filename, buf.Bytes(), 0600)
+}
