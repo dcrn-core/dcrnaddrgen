@@ -54,8 +54,8 @@ const ExternalBranch uint32 = 0
 // branch.
 const InternalBranch uint32 = 1
 
-//var params = chaincfg.MainNetParams()
-var params = chaincfg.TestNet3Params()
+var params = chaincfg.MainNetParams()
+//var params = chaincfg.TestNet3Params()
 
 // Flag arguments.
 var getHelp = flag.Bool("h", false, "Print help message")
